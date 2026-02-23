@@ -134,6 +134,25 @@ def _cell_text(cell) -> str:
     import re as _re
     return _re.sub(r"\s+", " ", text)
 
+def _series_text(cell) -> str:
+    """
+    シリーズ名セルのテキストを正規化して返す。
+    seriesCategory と異なり縦書きレイアウトではないため、
+    <br/> は単語間の改行として半角スペースに置換する。
+    """
+    from bs4 import NavigableString, Tag
+    parts: list[str] = []
+    for child in cell.children:
+        if isinstance(child, Tag) and child.name == "br":
+            parts.append(" ")
+        elif isinstance(child, NavigableString):
+            parts.append(str(child))
+        else:
+            parts.append(child.get_text())
+    text = "".join(parts).strip()
+    return re.sub(r"\s+", " ", text)
+
+
 def _normalize_cost(text: str) -> Optional[str]:
     """ヘッダーテキストからコスト数値文字列を抽出する（例: '3000コスト' → '3000'）"""
     m = re.search(r"(3000|2500|2000|1500)", text)
@@ -220,7 +239,7 @@ def _parse_unit_list_table(soup: BeautifulSoup, base_url: str, target_costs: lis
         else:
             try:
                 c = next(cell_iter)
-                series_name = _cell_text(c)
+                series_name = _series_text(c)
                 rs = int(c.get("rowspan", 1))
                 series_tracker = {"remaining": rs - 1, "value": series_name}
             except StopIteration:
@@ -332,7 +351,22 @@ def phase1(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
     out_path = Path(cfg["output"]["json_path"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Phase 1 結果を保存（後続フェーズのキャッシュとして使用）
+    # Phase 2 以降のデータが既存 JSON にある場合はマージする（再実行時にデータを失わないため）
+    _PHASE2_FIELDS = ("pilot", "imageUrl", "imageLocalPath", "tags", "metadata")
+    if out_path.exists():
+        with open(out_path, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+        if existing_data.get("metadata", {}).get("phase", 0) >= 2:
+            existing_by_id = {u["pageId"]: u for u in existing_data.get("units", [])}
+            merged = 0
+            for unit in units:
+                existing_unit = existing_by_id.get(unit["pageId"], {})
+                for field in _PHASE2_FIELDS:
+                    if field in existing_unit:
+                        unit[field] = existing_unit[field]
+                        merged += 1
+            logger.info("Phase 2 以降のフィールドをマージしました（%d フィールド）", merged)
+
     output = {
         "units": units,
         "metadata": {
@@ -340,7 +374,7 @@ def phase1(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
             "sourceUrl": index_url,
             "totalUnits": len(units),
             "scraperVersion": __version__,
-            "phase": 1,
+            "phase": existing_data.get("metadata", {}).get("phase", 1) if out_path.exists() else 1,
         },
     }
     with open(out_path, "w", encoding="utf-8") as f:
