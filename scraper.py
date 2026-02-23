@@ -463,16 +463,45 @@ def _parse_unit_page(soup: BeautifulSoup, unit: dict, logger: logging.Logger) ->
 
 
 def phase2(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
-    """Phase 2: 各機体ページから基本情報を取得してマージする"""
-    logger.info("=== Phase 2: 個別ページ基本情報取得 ===")
+    """
+    Phase 2: 各機体ページから全情報を1リクエストで一括取得する。
+    - パイロット（top-level）
+    - 画像URL（imgタグ → OGP meta フォールバック）
+    - 詳細メタデータ（耐久値・BD回数 等）
+    - タグ
+    - series / cost 差異チェック（一覧ページ優先、差異はログに記録）
+    """
+    logger.info("=== Phase 2: 個別ページ全情報取得 ===")
     units = load_cached_units(cfg, logger)
+    no_image_units: list[str] = []
 
     for unit in tqdm(units, desc="Phase2", unit="機体"):
         soup = fetch_soup(session, unit["wikiUrl"], logger)
         if soup is None:
             logger.warning("スキップ: %s", unit["wikiUrl"])
+            unit.setdefault("pilot", "")
+            unit.setdefault("imageUrl", None)
+            unit.setdefault("imageLocalPath", None)
+            unit.setdefault("tags", [])
+            unit.setdefault("metadata", {})
             continue
+
+        # 基本情報（pilot・series/cost 差異チェック）
         _parse_unit_page(soup, unit, logger)
+
+        # 画像URL
+        image_url = _extract_image_url(soup)
+        unit["imageUrl"] = image_url
+        unit["imageLocalPath"] = None
+        if image_url is None:
+            no_image_units.append(f"No.{unit['unitNo']:03d} {unit['name']}")
+            logger.warning("画像なし: No.%03d %s (pageId=%s)", unit["unitNo"], unit["name"], unit["pageId"])
+
+        # 詳細メタデータ・タグ
+        _parse_metadata_and_tags(soup, unit, logger)
+
+    if no_image_units:
+        logger.info("画像が見つからなかった機体 %d 件: %s", len(no_image_units), no_image_units)
 
     if not dry_run:
         save_units(cfg, units, phase=2, logger=logger)
@@ -480,7 +509,7 @@ def phase2(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: 画像URL抽出
+# 画像URL抽出ヘルパー（Phase 2 内で使用）
 # ---------------------------------------------------------------------------
 
 def _extract_image_url(soup: BeautifulSoup) -> Optional[str]:
@@ -497,36 +526,8 @@ def _extract_image_url(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
-def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
-    """Phase 3: 各機体ページから画像URLを抽出する"""
-    logger.info("=== Phase 3: 画像URL抽出 ===")
-    units = load_cached_units(cfg, logger)
-    no_image_units: list[str] = []
-
-    for unit in tqdm(units, desc="Phase3", unit="機体"):
-        soup = fetch_soup(session, unit["wikiUrl"], logger)
-        if soup is None:
-            logger.warning("スキップ: %s", unit["wikiUrl"])
-            continue
-
-        image_url = _extract_image_url(soup)
-        unit["imageUrl"] = image_url
-        unit["imageLocalPath"] = None
-
-        if image_url is None:
-            no_image_units.append(f"No.{unit['unitNo']:03d} {unit['name']}")
-            logger.warning("画像なし: No.%03d %s (pageId=%s)", unit["unitNo"], unit["name"], unit["pageId"])
-
-    if no_image_units:
-        logger.info("画像が見つからなかった機体 %d 件: %s", len(no_image_units), no_image_units)
-
-    if not dry_run:
-        save_units(cfg, units, phase=3, logger=logger)
-    return units
-
-
 # ---------------------------------------------------------------------------
-# Phase 4: 詳細メタデータ・タグ取得
+# 詳細メタデータ・タグ抽出ヘルパー（Phase 2 内で使用）
 # ---------------------------------------------------------------------------
 
 def _parse_bool_field(val: str) -> bool:
@@ -568,25 +569,8 @@ def _parse_metadata_and_tags(soup: BeautifulSoup, unit: dict, logger: logging.Lo
     return unit
 
 
-def phase4(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
-    """Phase 4: 詳細メタデータ・タグを取得する"""
-    logger.info("=== Phase 4: 詳細メタデータ・タグ取得 ===")
-    units = load_cached_units(cfg, logger)
-
-    for unit in tqdm(units, desc="Phase4", unit="機体"):
-        soup = fetch_soup(session, unit["wikiUrl"], logger)
-        if soup is None:
-            logger.warning("スキップ: %s", unit["wikiUrl"])
-            continue
-        _parse_metadata_and_tags(soup, unit, logger)
-
-    if not dry_run:
-        save_units(cfg, units, phase=4, logger=logger)
-    return units
-
-
 # ---------------------------------------------------------------------------
-# Phase 5: 画像ダウンロード
+# Phase 3: 画像ダウンロード
 # ---------------------------------------------------------------------------
 
 _INVALID_CHARS = re.compile(r'[/\\:*?"<>|]')
@@ -596,16 +580,16 @@ def _safe_filename(name: str) -> str:
     return _INVALID_CHARS.sub("_", name)
 
 
-def phase5(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
-    """Phase 5: 画像をローカルに保存する"""
-    logger.info("=== Phase 5: 画像ダウンロード ===")
+def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
+    """Phase 3: 画像をローカルに保存する（Phase 2 で取得した imageUrl を使用）"""
+    logger.info("=== Phase 3: 画像ダウンロード ===")
     units = load_cached_units(cfg, logger)
     image_dir = Path(cfg["output"]["image_dir"])
     image_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded = skipped = failed = 0
 
-    for unit in tqdm(units, desc="Phase5", unit="機体"):
+    for unit in tqdm(units, desc="Phase3", unit="機体"):
         image_url = unit.get("imageUrl")
         if not image_url:
             unit["imageLocalPath"] = None
@@ -640,7 +624,7 @@ def phase5(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
     logger.info("画像DL完了: %d 件 / スキップ: %d 件 / 失敗: %d 件", downloaded, skipped, failed)
 
     if not dry_run:
-        save_units(cfg, units, phase=5, logger=logger)
+        save_units(cfg, units, phase=3, logger=logger)
     return units
 
 
@@ -658,8 +642,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         type=int,
-        choices=[1, 2, 3, 4, 5],
-        help="実行フェーズ指定（省略時は全フェーズ実行）",
+        choices=[1, 2, 3],
+        help="実行フェーズ指定: 1=一覧取得 2=個別ページ全情報 3=画像DL（省略時は全フェーズ実行）",
     )
     return parser.parse_args()
 
@@ -680,7 +664,7 @@ def main() -> None:
 
     session = RateLimitedSession(cfg, logger)
 
-    phases = [args.phase] if args.phase else [1, 2, 3, 4, 5]
+    phases = [args.phase] if args.phase else [1, 2, 3]
 
     for phase_no in phases:
         if phase_no == 1:
@@ -688,14 +672,10 @@ def main() -> None:
         elif phase_no == 2:
             phase2(cfg, session, logger, dry_run=args.dry_run)
         elif phase_no == 3:
-            phase3(cfg, session, logger, dry_run=args.dry_run)
-        elif phase_no == 4:
-            phase4(cfg, session, logger, dry_run=args.dry_run)
-        elif phase_no == 5:
             if cfg["output"].get("download_images", True):
-                phase5(cfg, session, logger, dry_run=args.dry_run)
+                phase3(cfg, session, logger, dry_run=args.dry_run)
             else:
-                logger.info("Phase 5 スキップ（--no-images）")
+                logger.info("Phase 3 スキップ（--no-images）")
 
     logger.info("完了")
 
