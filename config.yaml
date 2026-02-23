@@ -1,0 +1,21 @@
+scraper:
+  base_url: "https://w.atwiki.jp/exvs2infiniteboost"
+  index_page: "/pages/123.html"
+  rate_limit: 1.0  # seconds per request
+  timeout: 10      # seconds
+  retry_count: 3
+
+output:
+  json_path: "./output/units.json"
+  image_dir: "./output/images"
+  download_images: true
+
+logging:
+  level: "INFO"
+  file: "./logs/scraper.log"
+
+target_columns:
+  - "3000"
+  - "2500"
+  - "2000"
+  - "1500"
