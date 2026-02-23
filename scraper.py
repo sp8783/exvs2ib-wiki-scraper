@@ -80,11 +80,41 @@ class RateLimitedSession:
         if wait > 0:
             time.sleep(wait)
 
-        self.logger.debug("GET %s", url)
-        resp = self.session.get(url, timeout=self.timeout)
-        self._last_request_time = time.time()
-        resp.raise_for_status()
-        return resp
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.retry_count + 1):
+            try:
+                self.logger.debug("GET %s (attempt %d/%d)", url, attempt + 1, self.retry_count + 1)
+                resp = self.session.get(url, timeout=self.timeout)
+                self._last_request_time = time.time()
+
+                if resp.status_code == 429:
+                    backoff = min(2 ** attempt, 16)
+                    self.logger.warning("429 Rate Limit: %s — %d秒待機してリトライ", url, backoff)
+                    time.sleep(backoff)
+                    last_exc = Exception(f"429 Too Many Requests: {url}")
+                    continue
+
+                resp.raise_for_status()
+                return resp
+
+            except Exception as e:
+                last_exc = e
+                # 404 は削除済みページの可能性が高いのでリトライしない
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status == 404:
+                    raise
+                if attempt < self.retry_count:
+                    backoff = min(2 ** attempt, 16)
+                    self.logger.warning(
+                        "エラー: %s — %s — %d秒後リトライ (%d/%d)",
+                        url, e, backoff, attempt + 1, self.retry_count,
+                    )
+                    time.sleep(backoff)
+                else:
+                    self.logger.error("最大リトライ回数到達: %s", url)
+                    raise
+
+        raise last_exc or RuntimeError(f"リトライ失敗: {url}")
 
 
 def fetch_soup(session: RateLimitedSession, url: str, logger: logging.Logger) -> Optional[BeautifulSoup]:
@@ -496,7 +526,7 @@ def _parse_unit_page(soup: BeautifulSoup, unit: dict, logger: logging.Logger) ->
     return unit
 
 
-def phase2(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
+def phase2(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False, force: bool = False) -> list[dict]:
     """
     Phase 2: 各機体ページから全情報を1リクエストで一括取得する。
     - パイロット（top-level）
@@ -504,12 +534,24 @@ def phase2(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
     - 詳細メタデータ（耐久値・BD回数 等）
     - タグ
     - series / cost 差異チェック（一覧ページ優先、差異はログに記録）
+
+    差分更新: --force なしの場合、すでに imageUrl が取得済みの機体はスキップする。
     """
     logger.info("=== Phase 2: 個別ページ全情報取得 ===")
     units = load_cached_units(cfg, logger)
+
+    if force:
+        to_process = units
+        logger.info("--force: 全 %d 機体を再処理します", len(units))
+    else:
+        to_process = [u for u in units if "imageUrl" not in u]
+        skip_count = len(units) - len(to_process)
+        if skip_count:
+            logger.info("スキップ（処理済み）: %d 機体 / 新規処理: %d 機体", skip_count, len(to_process))
+
     no_image_units: list[str] = []
 
-    for unit in tqdm(units, desc="Phase2", unit="機体"):
+    for unit in tqdm(to_process, desc="Phase2", unit="機体"):
         soup = fetch_soup(session, unit["wikiUrl"], logger)
         if soup is None:
             logger.warning("スキップ: %s", unit["wikiUrl"])
@@ -673,6 +715,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", help="出力JSONパス（config.yaml を上書き）")
     parser.add_argument("--verbose", action="store_true", help="詳細ログ出力")
     parser.add_argument("--dry-run", action="store_true", help="実行せずURLリスト表示のみ")
+    parser.add_argument("--force", action="store_true", help="Phase 2 で処理済み機体も強制再取得する")
     parser.add_argument(
         "--phase",
         type=int,
@@ -704,7 +747,7 @@ def main() -> None:
         if phase_no == 1:
             phase1(cfg, session, logger, dry_run=args.dry_run)
         elif phase_no == 2:
-            phase2(cfg, session, logger, dry_run=args.dry_run)
+            phase2(cfg, session, logger, dry_run=args.dry_run, force=args.force)
         elif phase_no == 3:
             if cfg["output"].get("download_images", True):
                 phase3(cfg, session, logger, dry_run=args.dry_run)
