@@ -21,7 +21,7 @@ import yaml
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # 設定ロード
