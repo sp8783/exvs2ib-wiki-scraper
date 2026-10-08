@@ -56,7 +56,7 @@ python scraper.py --phase 3
 | パス | 内容 |
 |-----|------|
 | `output/units.json` | 全機体データ（JSON） |
-| `output/images/` | 機体画像（`{unitNo:03d}_{name}_{pageId}.png`） |
+| `output/images/` | 機体画像（`{pageId}_{name}.png`。旧形式 `{unitNo:03d}_{name}_{pageId}.png` の画像は Phase 3 で新形式にリネームされる） |
 | `logs/scraper.log` | 実行ログ |
 
 ## 設定
@@ -68,7 +68,13 @@ scraper:
   rate_limit: 1.0   # リクエスト間隔（秒）
   timeout: 10       # タイムアウト（秒）
   retry_count: 3    # リトライ回数
+
+# 出力から除外する機体の Wiki ページ ID（情報解禁済み・未実装の機体など）
+exclude_page_ids:
+  - 772
 ```
+
+`exclude_page_ids` に指定した機体は Phase 1 で除外され、`unitNo` は除外後に振り直されます。
 
 ## 差分更新
 

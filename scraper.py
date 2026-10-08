@@ -21,7 +21,7 @@ import yaml
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # 設定ロード
@@ -355,6 +355,24 @@ def _parse_unit_list_table(soup: BeautifulSoup, base_url: str, target_costs: lis
     return units
 
 
+def _apply_exclusions(units: list[dict], exclude_page_ids: Optional[list], logger: logging.Logger) -> list[dict]:
+    """config の exclude_page_ids に指定した機体（情報解禁済み・未実装など）を除外し、unitNo を振り直す"""
+    excluded = {str(page_id) for page_id in (exclude_page_ids or [])}
+    if not excluded:
+        return units
+
+    kept: list[dict] = []
+    for unit in units:
+        if unit["pageId"] in excluded:
+            logger.info("除外: %s (pageId=%s)", unit["name"], unit["pageId"])
+            continue
+        kept.append(unit)
+
+    for unit_no, unit in enumerate(kept, start=1):
+        unit["unitNo"] = unit_no
+    return kept
+
+
 def phase1(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
     """Phase 1: 機体一覧ページから全機体のメタ情報を抽出し JSON 出力する"""
     base_url = cfg["scraper"]["base_url"]
@@ -370,6 +388,7 @@ def phase1(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
         sys.exit(1)
 
     units = _parse_unit_list_table(soup, base_url, target_costs, logger)
+    units = _apply_exclusions(units, cfg.get("exclude_page_ids"), logger)
     logger.info("抽出機体数: %d", len(units))
 
     if dry_run:
@@ -656,6 +675,12 @@ def _safe_filename(name: str) -> str:
     return _INVALID_CHARS.sub("_", name)
 
 
+def _find_previous_image(image_dir: Path, page_id: str, filename: str) -> Optional[Path]:
+    """同じ機体の旧名の画像を探す（旧形式 {unitNo:03d}_{機体名}_{pageId}.png、または機体名が変わる前の {pageId}_{機体名}.png）"""
+    candidates = list(image_dir.glob(f"[0-9][0-9][0-9]_*_{page_id}.png")) + list(image_dir.glob(f"{page_id}_*.png"))
+    return next((path for path in candidates if path.name != filename), None)
+
+
 def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_run: bool = False) -> list[dict]:
     """Phase 3: 画像をローカルに保存する（Phase 2 で取得した imageUrl を使用）"""
     logger.info("=== Phase 3: 画像ダウンロード ===")
@@ -663,7 +688,7 @@ def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
     image_dir = Path(cfg["output"]["image_dir"])
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded = skipped = failed = 0
+    downloaded = skipped = renamed = failed = 0
 
     for unit in tqdm(units, desc="Phase3", unit="機体"):
         image_url = unit.get("imageUrl")
@@ -671,10 +696,20 @@ def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
             unit["imageLocalPath"] = None
             continue
 
+        # ページ ID で機体を一意にし、機体追加で既存の画像名がずれないようにする（機体名は探しやすさのため）
         safe_name = _safe_filename(unit["name"])
-        filename = f"{unit['unitNo']:03d}_{safe_name}_{unit['pageId']}.png"
+        filename = f"{unit['pageId']}_{safe_name}.png"
         local_path = image_dir / filename
         relative_path = f"./output/images/{filename}"
+
+        previous = None if local_path.exists() else _find_previous_image(image_dir, unit["pageId"], filename)
+        if previous is not None:
+            if not dry_run:
+                previous.rename(local_path)
+            logger.debug("リネーム: %s -> %s", previous.name, filename)
+            unit["imageLocalPath"] = relative_path
+            renamed += 1
+            continue
 
         if local_path.exists():
             logger.debug("スキップ（既存）: %s", filename)
@@ -697,7 +732,7 @@ def phase3(cfg: dict, session: RateLimitedSession, logger: logging.Logger, dry_r
             unit["imageLocalPath"] = None
             failed += 1
 
-    logger.info("画像DL完了: %d 件 / スキップ: %d 件 / 失敗: %d 件", downloaded, skipped, failed)
+    logger.info("画像DL完了: %d 件 / スキップ: %d 件 / リネーム: %d 件 / 失敗: %d 件", downloaded, skipped, renamed, failed)
 
     if not dry_run:
         save_units(cfg, units, phase=3, logger=logger)
