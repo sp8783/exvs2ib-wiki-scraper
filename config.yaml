@@ -14,6 +14,9 @@ logging:
   level: "INFO"
   file: "./logs/scraper.log"
 
+# 出力から除外する機体の Wiki ページ ID（pages/{id}.html の id）。情報解禁済み・未実装の機体などを指定する
+exclude_page_ids: []
+
 target_columns:
   - "3000"
   - "2500"
