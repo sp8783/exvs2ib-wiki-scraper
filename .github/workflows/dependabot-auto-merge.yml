@@ -1,0 +1,37 @@
+name: Dependabot の自動マージ
+
+# Dependabot の PR（Python パッケージ・GitHub Actions の更新）は、patch / minor の更新なら CI が通り次第 main にマージする。
+# major の更新は何もしない（手でマージ）。main の保護ルール（CI の ci が必須）があるので、予約した自動マージは CI が通るまで待つ。
+#
+# Dependabot の PR では通常の secrets が読めないため pull_request_target で動かす。
+# base ブランチの権限で動くので、PR 側のコードはチェックアウトも実行もしない。
+# main への push で動く workflow はないので、GitHub 標準のトークンでよい
+on:
+  pull_request_target:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # CI がすでに通っていて予約できないときは、そのままマージする。
+      # チェックが 1 つでも失敗・未完了なら gh pr checks が 0 以外で終わるので、何もせずに失敗する（CI 失敗のままマージしない）
+      - name: Enable auto-merge
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --merge "$PR_URL" || (gh pr checks "$PR_URL" && gh pr merge --merge "$PR_URL")

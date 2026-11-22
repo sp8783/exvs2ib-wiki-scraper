@@ -1,0 +1,26 @@
+version: 2
+# 毎日 9:00（日本時間・平日）に更新を確認する。PR は .github/workflows/dependabot-auto-merge.yml が CI 後に自動でマージする（major は手で）。
+# 脆弱性の修正はリポジトリ設定の Dependabot security updates が、このスケジュールを待たずに PR を出す
+updates:
+- package-ecosystem: pip
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "09:00"
+    timezone: Asia/Tokyo
+  open-pull-requests-limit: 10
+  groups:
+      python-dependencies:
+        patterns:
+          - "*"
+- package-ecosystem: github-actions
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "09:00"
+    timezone: Asia/Tokyo
+  open-pull-requests-limit: 10
+  groups:
+      actions-dependencies:
+        patterns:
+          - "*"

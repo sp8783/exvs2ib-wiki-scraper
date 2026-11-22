@@ -1,0 +1,34 @@
+name: CI
+
+# 依存が入り、コードが読み込めて --help が出ることを確かめる（Dependabot の PR を自動でマージする門）
+# Python の版は vsmobile-kgy の「機体データの更新確認」がこのスクレイパーを動かす版に合わせる
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: 読み込めることを確かめる
+        run: |
+          python -m compileall -q scraper.py
+          python scraper.py --help
